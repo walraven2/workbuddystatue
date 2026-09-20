@@ -41,14 +41,23 @@ echo "==> 版本：v$VERSION"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-echo "==> 编译 Swift 源码"
-swiftc \
-    -swift-version 5 \
-    -O \
-    -framework AppKit \
-    -framework Foundation \
-    -o "$BIN" \
-    "$ROOT"/Sources/*.swift
+SWIFT_FLAGS=(-swift-version 5 -O -framework AppKit -framework Foundation)
+TMPBIN="$(mktemp -d)"
+
+if [[ "$ACTION" == "dist" ]]; then
+    echo "==> 编译 Universal 二进制（x86_64 + arm64）"
+    swiftc "${SWIFT_FLAGS[@]}" -target x86_64-apple-macos13.0 \
+        -o "$TMPBIN/app-x86_64" "$ROOT"/Sources/*.swift
+    swiftc "${SWIFT_FLAGS[@]}" -target arm64-apple-macos13.0 \
+        -o "$TMPBIN/app-arm64" "$ROOT"/Sources/*.swift
+    lipo -create -output "$BIN" "$TMPBIN/app-x86_64" "$TMPBIN/app-arm64"
+    rm -rf "$TMPBIN"
+    echo "    架构：$(lipo -archs "$BIN")"
+else
+    echo "==> 编译 Swift 源码（$ARCH）"
+    swiftc "${SWIFT_FLAGS[@]}" -o "$BIN" "$ROOT"/Sources/*.swift
+    rm -rf "$TMPBIN"
+fi
 
 cp "$ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
@@ -79,7 +88,7 @@ case "$ACTION" in
         ;;
     dist)
         mkdir -p "$DIST_DIR"
-        ZIP="$DIST_DIR/$APP_NAME-$VERSION-macos-$ARCH.zip"
+        ZIP="$DIST_DIR/$APP_NAME-$VERSION-macos-universal.zip"
         rm -f "$ZIP"
         echo "==> 打开发行包"
         # ditto 会保留符号链接与扩展属性，比 zip 命令更适合分发 .app

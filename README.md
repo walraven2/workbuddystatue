@@ -24,10 +24,10 @@
 ## 下载安装（无需编译）
 
 到 [Releases](https://github.com/walraven2/workbuddystatue/releases) 下载
-`WorkBuddyStatus-<版本>-macos-<架构>.zip`，然后：
+`WorkBuddyStatus-<版本>-macos-universal.zip`（同时支持 Intel 与 Apple 芯片），然后：
 
 ```bash
-unzip WorkBuddyStatus-1.0.0-macos-x86_64.zip
+unzip WorkBuddyStatus-1.0.0-macos-universal.zip
 ./WorkBuddyStatus.app/Contents/MacOS/WorkBuddyStatus --check   # 可选：先诊断
 xattr -dr com.apple.quarantine WorkBuddyStatus.app             # 去掉隔离属性
 cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.app
@@ -36,8 +36,8 @@ cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.a
 或者解压后直接用仓库里的安装脚本：
 
 ```bash
-./install.sh WorkBuddyStatus-1.0.0-macos-x86_64.zip   # 安装并启动
-./install.sh --uninstall                              # 卸载（含登录自启）
+./install.sh WorkBuddyStatus-1.0.0-macos-universal.zip   # 安装并启动
+./install.sh --uninstall                                 # 卸载（含登录自启）
 ```
 
 **首次打开被 Gatekeeper 拦截时**：右键 App → 打开，或执行上面的 `xattr -dr`。
@@ -48,14 +48,15 @@ cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.a
 ```bash
 cd WorkBuddyStatus
 
-./build.sh            # 仅编译，产物在 build/WorkBuddyStatus.app
+./build.sh            # 仅编译当前架构，产物在 build/WorkBuddyStatus.app
 ./build.sh run        # 编译并运行
 ./build.sh install    # 编译并安装到 /Applications 后启动
-./build.sh dist       # 产出发行包 dist/WorkBuddyStatus-<版本>-macos-<架构>.zip
+./build.sh dist       # 产出 Universal 发行包 dist/WorkBuddyStatus-<版本>-macos-universal.zip
 ./build.sh clean      # 清理 build/ 与 dist/
 ```
 
-发行包用 `ditto -c -k --keepParent` 打包，保留符号链接与扩展属性。
+发行包会对 x86_64 与 arm64 各编译一次再用 `lipo` 合并，最后用
+`ditto -c -k --keepParent` 打包，保留符号链接与扩展属性。
 
 首次打开若被 Gatekeeper 拦截：右键 App → 打开；或执行
 `xattr -dr com.apple.quarantine /Applications/WorkBuddyStatus.app`。
