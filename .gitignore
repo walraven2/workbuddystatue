@@ -7,3 +7,7 @@ dist/
 
 # 日志与临时文件
 *.log
+
+# Windows / Go 生成产物
+windows/rsrc_windows_amd64.syso
+windows/rsrc_windows_arm64.syso

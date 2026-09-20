@@ -1,12 +1,24 @@
-# WorkBuddy 积分状态栏小工具（macOS）
+# WorkBuddy 积分小工具
 
-把 WorkBuddy 的积分余额直接显示在 macOS 菜单栏里，鼠标一点即可看到明细、签到状态，并支持自动刷新与登录自启。
+把 WorkBuddy 的积分余额直接显示在系统托盘 / 菜单栏里，鼠标一点即可看到明细、签到状态，并支持自动刷新与开机自启。
+
+三个平台各有一份实现，共用同一套接口、配置格式与凭据来源：
+
+| 平台 | 显示载体 | 实现 | 说明 |
+| --- | --- | --- | --- |
+| **macOS** | 菜单栏 | Swift + AppKit | 本文档；产物约 300 KB |
+| **Windows** | 系统托盘 + 桌面悬浮窗 | Go（纯标准库） | [windows/README.md](windows/README.md)；单文件 exe |
+| **Linux** | XFCE 面板（genmon） | Python 3 | [linux/](linux/)；`linux/install.sh` |
+
+---
+
+## macOS 版
 
 ![状态栏](预览-状态栏.png)
 
 ![菜单](预览-菜单.png)
 
-## 特性
+### 特性
 
 - **菜单栏常驻**：以 `⚡ 1507` 形式显示剩余积分，支持「数值 / 百分比 / 仅图标」三种显示模式
 - **自动读取登录态**：直接复用 WorkBuddy 桌面端已登录的令牌，**无需手动填 token**，令牌刷新后自动跟随
@@ -133,3 +145,28 @@ rm -rf /Applications/WorkBuddyStatus.app ~/.workbuddy-status
 | `install.sh` | 安装 / 卸载脚本 |
 | `make-release.sh` | 创建 / 更新 GitHub Release 并上传发行包（需 token） |
 | `release-notes.md` | Release 说明正文，由 `make-release.sh` 读取 |
+| `windows/` | Windows 版（Go），详见 [windows/README.md](windows/README.md) |
+| `linux/` | Linux 版（Python + XFCE genmon），详见 [linux/](linux/) |
+
+## 共用约定
+
+三个平台读同一份配置文件 `~/.workbuddy-status/config.json`，凭据来源也一致：
+
+1. 配置里的 `accessToken`（或 `WORKBUDDY_ACCESS_TOKEN` 环境变量）
+2. WorkBuddy 桌面端登录信息
+   - macOS：`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/*.info`
+   - Windows：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info`
+   - Linux：`~/.local/share/CodeBuddyExtension/Data/Public/auth/*.info`
+3. 旧版布局 `~/.workbuddy/auth/`、`~/.codebuddy/auth/`
+
+接口同为：
+
+```
+POST https://copilot.tencent.com/billing/meter/get-user-resource-summary
+Authorization: Bearer <accessToken>
+X-User-Id: <userId>
+```
+
+Windows 版写 `config.json` 时采用「读-改-写」，只覆盖自己认识的键，
+因此 macOS 版写入的其它字段（包括 `"//"` 注释键）不会被抹掉。
+
