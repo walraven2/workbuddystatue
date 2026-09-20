@@ -21,6 +21,28 @@
 - macOS 13 及以上（开发验证环境：macOS 13.7.8 / Intel x86_64）
 - Xcode 命令行工具（`xcode-select --install`），提供 `swiftc`
 
+## 下载安装（无需编译）
+
+到 [Releases](https://github.com/walraven2/workbuddystatue/releases) 下载
+`WorkBuddyStatus-<版本>-macos-<架构>.zip`，然后：
+
+```bash
+unzip WorkBuddyStatus-1.0.0-macos-x86_64.zip
+./WorkBuddyStatus.app/Contents/MacOS/WorkBuddyStatus --check   # 可选：先诊断
+xattr -dr com.apple.quarantine WorkBuddyStatus.app             # 去掉隔离属性
+cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.app
+```
+
+或者解压后直接用仓库里的安装脚本：
+
+```bash
+./install.sh WorkBuddyStatus-1.0.0-macos-x86_64.zip   # 安装并启动
+./install.sh --uninstall                              # 卸载（含登录自启）
+```
+
+**首次打开被 Gatekeeper 拦截时**：右键 App → 打开，或执行上面的 `xattr -dr`。
+原因是本地构建只做了 ad-hoc 签名，没有 Apple 开发者证书。
+
 ## 编译与安装
 
 ```bash
@@ -29,8 +51,11 @@ cd WorkBuddyStatus
 ./build.sh            # 仅编译，产物在 build/WorkBuddyStatus.app
 ./build.sh run        # 编译并运行
 ./build.sh install    # 编译并安装到 /Applications 后启动
-./build.sh clean      # 清理构建产物
+./build.sh dist       # 产出发行包 dist/WorkBuddyStatus-<版本>-macos-<架构>.zip
+./build.sh clean      # 清理 build/ 与 dist/
 ```
+
+发行包用 `ditto -c -k --keepParent` 打包，保留符号链接与扩展属性。
 
 首次打开若被 Gatekeeper 拦截：右键 App → 打开；或执行
 `xattr -dr com.apple.quarantine /Applications/WorkBuddyStatus.app`。
@@ -102,4 +127,6 @@ rm -rf /Applications/WorkBuddyStatus.app ~/.workbuddy-status
 | `Sources/Credential.swift` | 配置读写、凭据探测与 JWT 解析 |
 | `Sources/LaunchAtLogin.swift` | 登录自启（LaunchAgent） |
 | `Sources/Diagnostics.swift` | `--check` 诊断输出 |
-| `build.sh` | 编译 / 打包 / 签名 / 安装脚本 |
+| `Resources/AppIcon.icns` | 应用图标 |
+| `build.sh` | 编译 / 打包 / 签名 / 产出发行包 |
+| `install.sh` | 安装 / 卸载脚本 |
