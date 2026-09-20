@@ -27,7 +27,7 @@
 `WorkBuddyStatus-<版本>-macos-universal.zip`（同时支持 Intel 与 Apple 芯片），然后：
 
 ```bash
-unzip WorkBuddyStatus-1.0.0-macos-universal.zip
+unzip WorkBuddyStatus-1.2.0-macos-universal.zip
 ./WorkBuddyStatus.app/Contents/MacOS/WorkBuddyStatus --check   # 可选：先诊断
 xattr -dr com.apple.quarantine WorkBuddyStatus.app             # 去掉隔离属性
 cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.app
@@ -36,7 +36,7 @@ cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.a
 或者解压后直接用仓库里的安装脚本：
 
 ```bash
-./install.sh WorkBuddyStatus-1.0.0-macos-universal.zip   # 安装并启动
+./install.sh WorkBuddyStatus-1.2.0-macos-universal.zip   # 安装并启动
 ./install.sh --uninstall                                 # 卸载（含登录自启）
 ```
 
@@ -131,3 +131,5 @@ rm -rf /Applications/WorkBuddyStatus.app ~/.workbuddy-status
 | `Resources/AppIcon.icns` | 应用图标 |
 | `build.sh` | 编译 / 打包 / 签名 / 产出发行包 |
 | `install.sh` | 安装 / 卸载脚本 |
+| `make-release.sh` | 创建 / 更新 GitHub Release 并上传发行包（需 token） |
+| `release-notes.md` | Release 说明正文，由 `make-release.sh` 读取 |
