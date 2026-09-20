@@ -41,6 +41,14 @@ CONFIG_FILE = os.path.join(STATE_DIR, "config.json")
 LOG_FILE = os.path.join(STATE_DIR, "last-error.log")
 LOCK_FILE = os.path.join(STATE_DIR, "daemon.lock")
 PREF_FILE = os.path.join(STATE_DIR, ".token-fingerprint")
+# 本地"今日已签到"标记（存日期，隔天自动失效）
+CHECKIN_MARK_FILE = os.path.join(STATE_DIR, ".checkin-mark")
+
+# 签到接口（与技能广场 workbuddy-checkin / leon-daily-checkin 交叉核对一致）
+CHECKIN_PATH = "/billing/meter/daily-checkin"
+CHECKIN_STATUS_PATH = "/billing/meter/checkin-status"
+# 业务码：0=成功；10001=当日已签到（幂等拒绝，按成功处理）
+CHECKIN_ALREADY_CODE = 10001
 
 DEFAULT_ENDPOINT = "https://copilot.tencent.com"
 DEFAULT_REFRESH = 300          # 秒
@@ -226,6 +234,32 @@ def write_preferred_fingerprint(fingerprint):
         pass
 
 
+# ------------------------------------------------ 「今日已签到」本地标记
+# 服务端的 today_checked_in 实测不可靠（签到成功后仍可能返回 false），
+# 所以成功签到后在这里落一个日期戳，当天一直认；跨天自动失效。
+
+def _today_str():
+    return time.strftime("%Y-%m-%d")
+
+
+def mark_checked_in_today():
+    try:
+        ensure_state_dir()
+        with open(CHECKIN_MARK_FILE, "w", encoding="utf-8") as fh:
+            fh.write(_today_str())
+    except OSError:
+        pass
+
+
+def locally_checked_in():
+    """今天是否已经成功签到过（本地标记）。"""
+    try:
+        with open(CHECKIN_MARK_FILE, "r", encoding="utf-8") as fh:
+            return fh.read().strip() == _today_str()
+    except OSError:
+        return False
+
+
 def candidate_credentials(cfg):
     """按「越可能有效」排序返回候选凭据列表。
 
@@ -315,6 +349,39 @@ def api_post(cfg, path, token, uid, timeout=25):
     return data
 
 
+def _post_checkin(cfg, token, uid, timeout=25):
+    """POST 签到接口，返回 (payload, http_status)。
+
+    ⚠️ 关键：服务端用 HTTP 400 承载业务码 10001（"今天已签到，请明天再来"）。
+    所以 4xx 绝不能直接当失败——必须把响应体解析出来看业务码，
+    否则「今日已签」会被误报成签到失败。
+    """
+    url = cfg.endpoint.rstrip("/") + CHECKIN_PATH
+    body = json.dumps({}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    req.add_header("Accept-Language", "zh")
+    req.add_header("User-Agent", "WorkBuddyStatus/1.0 (Linux)")
+    req.add_header("Authorization", "Bearer %s" % token)
+    if uid:
+        req.add_header("X-User-Id", uid)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            status = resp.getcode()
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read().decode("utf-8", "replace")
+        except Exception:
+            raw = ""
+        status = exc.code
+    try:
+        return json.loads(raw or "{}"), status
+    except ValueError:
+        return {"code": None, "msg": (raw or "")[:200]}, status
+
+
 def _num(value):
     try:
         return float(value)
@@ -350,6 +417,10 @@ def fetch_summary(cfg, token, uid, timeout=25):
             "season": cdata.get("season"),
             "activity": cdata.get("activity_name") or "",
         }
+        # 服务端 today_checked_in 不可靠：本地标记优先
+        if locally_checked_in():
+            checkin["today"] = True
+            checkin["local_mark"] = True
     except Exception as exc:
         log("签到接口失败：%s" % exc)
 
@@ -367,6 +438,51 @@ def fetch_summary(cfg, token, uid, timeout=25):
         "total_used": sum(p["used"] for p in packages),
         "ratio": (total_remain / total_cap) if total_cap > 0 else 0.0,
     }
+
+
+# ---------------------------------------------------------------- 签到
+
+def do_checkin(cfg, timeout=25):
+    """执行每日签到，返回结果字典。
+
+    幂等性：接口对"今日已签到"返回 code=10001，按成功处理，绝不重复领取。
+    先复用 fetch_with_fallback 探出一个真能用的令牌，避免拿残片令牌去签到。
+    """
+    try:
+        _summary, cred = fetch_with_fallback(cfg, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        return {"status": "error", "code": exc.code,
+                "message": "获取可用令牌失败（HTTP %s），请先在 CodeBuddy 桌面端重新登录" % exc.code}
+    except Exception as exc:
+        return {"status": "error", "message": "获取可用令牌失败：%s" % exc}
+
+    try:
+        payload, http = _post_checkin(cfg, cred["token"], cred["uid"], timeout)
+    except Exception as exc:
+        return {"status": "error", "message": "签到请求失败：%s" % exc}
+
+    code = payload.get("code")
+    msg = payload.get("msg") or payload.get("message") or ""
+    data = payload.get("data") or {}
+
+    if code == 0:
+        result = {
+            "status": "ok",
+            "credit": _num(data.get("credit")),
+            "streak": int(_num(data.get("streak_days"))),
+            "message": msg or "签到成功",
+        }
+    elif code == CHECKIN_ALREADY_CODE or "已签到" in str(msg):
+        result = {"status": "already", "code": code, "message": "今日已签到，明天再来"}
+    elif http in (401, 403):
+        return {"status": "error", "code": http,
+                "message": "令牌已过期或无权限（HTTP %s），请在桌面端重新登录" % http}
+    else:
+        return {"status": "error", "code": code, "http": http,
+                "message": "签到接口返回 code=%s（HTTP %s）：%s" % (code, http, msg or "(无消息)")}
+
+    mark_checked_in_today()
+    return result
 
 
 # ---------------------------------------------------------------- 缓存
@@ -581,11 +697,31 @@ def cmd_daemon(cfg):
     return 0
 
 
+def cmd_checkin(cfg):
+    """签到并顺带刷新缓存。stdout 只吐一行 JSON，供 GUI 解析。"""
+    result = do_checkin(cfg)
+    # 无论成功与否都刷新一次缓存，好让余额立刻反映新领到的积分
+    try:
+        data, cred = fetch_with_fallback(cfg)
+        write_cache(data)
+        result["summary"] = {
+            "remain": data["total_remain"],
+            "capacity": data["total_capacity"],
+            "ratio": data["ratio"],
+        }
+    except Exception as exc:
+        result["summary_error"] = str(exc)
+
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result["status"] in ("ok", "already") else 1
+
+
 COMMANDS = {
     "genmon": cmd_genmon,
     "detail": cmd_detail,
     "check": cmd_check,
     "fetch": cmd_fetch,
+    "checkin": cmd_checkin,
     "daemon": cmd_daemon,
 }
 

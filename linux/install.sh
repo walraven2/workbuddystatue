@@ -2,8 +2,15 @@
 #
 # WorkBuddy 积分状态栏 —— Linux / XFCE 安装脚本
 #
-#   ./install.sh              安装（默认装到 ~/.local/bin，注册面板插件，开自启）
+#   ./install.sh              安装（程序本体 + 刷新服务 + 自启；不动面板）
+#   ./install.sh --with-panel 额外注册 XFCE genmon 面板插件（默认关闭，见下）
 #   ./install.sh --uninstall  卸载（移除面板插件、自启、程序与配置）
+#
+# 为什么默认不注册面板插件：
+#   xfce4-genmon-plugin 4.1.1 在 xfce4-panel 4.18 上不会读取 xfconf 里的 command，
+#   面板只显示占位符 "(genmon)XXX"（已用 dbus-monitor 抓包确认：它一次 xfconf 都没读）。
+#   想要"状态栏上一直看得见积分"，请用桌面小组件：
+#           ./install-credits.sh
 #
 # 说明：apt 安装 xfce4-genmon-plugin 这一步需要 root，本脚本不代劳，
 #       请在运行前先执行：
@@ -28,6 +35,60 @@ find_free_plugin_id() {
         id=$((id + 1))
     done
     echo "$id"
+}
+
+# ---------------------------------------------------------------------------
+# plugin-ids 是一个 xfconf int 数组。
+# 注意：xfconf-query 没有"追加到数组"的选项！
+#   -a / --create 只是"属性不存在时创建"，对数组而言它会把整个数组覆盖成单个元素。
+#   这曾把用户原来的 22 个插件全部清空，务必用下面的函数改数组：先读整份、再整份写回。
+# ---------------------------------------------------------------------------
+
+# 读出数组里的所有整数（每行一个，兼容中英文 locale）
+panel_ids_get() {
+    xfconf-query -c "$PANEL_CHANNEL" -p "/panels/$PANEL/plugin-ids" 2>/dev/null \
+        | grep -E '^[0-9]+$' || true
+}
+
+# 整份写回数组；为空则删除该属性
+panel_ids_set() {
+    local ids=("$@")
+    if [ ${#ids[@]} -eq 0 ]; then
+        xfconf-query -c "$PANEL_CHANNEL" -p "/panels/$PANEL/plugin-ids" -r 2>/dev/null || true
+        return 0
+    fi
+    local args=()
+    local id
+    for id in "${ids[@]}"; do
+        args+=(-t int -s "$id")
+    done
+    xfconf-query -c "$PANEL_CHANNEL" -p "/panels/$PANEL/plugin-ids" "${args[@]}"
+}
+
+# 追加（幂等）
+panel_ids_add() {
+    local want="$1" id
+    local ids=()
+    while read -r id; do
+        [ -n "$id" ] && ids+=("$id")
+    done < <(panel_ids_get)
+    for id in "${ids[@]}"; do
+        [ "$id" = "$want" ] && { echo "  $PANEL 里已存在插件 $want"; return 0; }
+    done
+    ids+=("$want")
+    panel_ids_set "${ids[@]}"
+}
+
+# 移除（幂等）
+panel_ids_remove() {
+    local want="$1" id
+    local ids=()
+    while read -r id; do
+        [ -n "$id" ] || continue
+        [ "$id" = "$want" ] && continue
+        ids+=("$id")
+    done < <(panel_ids_get)
+    panel_ids_set "${ids[@]}"
 }
 
 # 从正在运行的 xfce4-panel 进程里取出它所属的 DISPLAY / DBUS 会话
@@ -115,7 +176,13 @@ DESKTOP
     echo "  已写入 $AUTOSTART_FILE"
 
     echo "==> 5/6 注册 XFCE 面板插件"
-    if [ "$HAVE_GENMON" = "1" ] && detect_gui_env; then
+    if [ "$WITH_PANEL" != "1" ]; then
+        echo "  跳过（默认不改动面板配置，避免动到你的桌面布局）"
+        echo "  原因：xfce4-genmon-plugin 4.1.1 在 xfce4-panel 4.18 上不读取 xfconf 配置，"
+        echo "        面板只会显示占位符 (genmon)XXX。已在用户机器上复现确认。"
+        echo "  推荐：改用桌面小组件 ——  ./install-credits.sh"
+        echo "  坚持要试面板集成：./install.sh --with-panel"
+    elif [ "$HAVE_GENMON" = "1" ] && detect_gui_env; then
         # 备份面板配置
         if [ -f "$PANEL_XML" ]; then
             cp "$PANEL_XML" "$PANEL_XML.bak.$(date +%Y%m%d%H%M%S)"
@@ -129,13 +196,8 @@ DESKTOP
         xfconf-query -c "$PANEL_CHANNEL" -p "/plugins/plugin-$PLUGIN_ID/use-label" -t bool -s false --create
         xfconf-query -c "$PANEL_CHANNEL" -p "/plugins/plugin-$PLUGIN_ID/update-on-click" -t bool -s true --create
 
-        # 加入 panel-1 的 plugin-ids（避免重复追加）
-        if ! xfconf-query -c "$PANEL_CHANNEL" -p "/panels/$PANEL/plugin-ids" -lv 2>/dev/null | grep -q " $PLUGIN_ID\$"; then
-            xfconf-query -c "$PANEL_CHANNEL" -p "/panels/$PANEL/plugin-ids" -t int -s "$PLUGIN_ID" -a
-            echo "  已加入 $PANEL 的插件列表"
-        else
-            echo "  $PANEL 里已存在该插件"
-        fi
+        # 加入 panel-1 的 plugin-ids（整份数组写回，绝不用 -a）
+        panel_ids_add "$PLUGIN_ID" && echo "  已加入 $PANEL 的插件列表"
         echo "__PLUGIN_ID__=$PLUGIN_ID" > "$STATE_DIR/.panel-plugin-id"
     else
         echo "  跳过（genmon 未安装或找不到面板会话）"
@@ -180,7 +242,7 @@ do_uninstall() {
             done
         fi
         if [ -n "$PLUGIN_ID" ]; then
-            xfconf-query -c "$PANEL_CHANNEL" -p "/panels/$PANEL/plugin-ids" -t int -s "$PLUGIN_ID" -r 2>/dev/null
+            panel_ids_remove "$PLUGIN_ID"
             xfconf-query -c "$PANEL_CHANNEL" -p "/plugins/plugin-$PLUGIN_ID" -r -R 2>/dev/null
             echo "  已移除面板插件 plugin-$PLUGIN_ID"
             restart_panel
@@ -195,7 +257,11 @@ do_uninstall() {
     echo "完成。"
 }
 
+# ------------------------------------------------------------------ 入口
+
+WITH_PANEL=0
 case "${1:-install}" in
     --uninstall|uninstall|-u) do_uninstall ;;
+    --with-panel)             WITH_PANEL=1; do_install ;;
     *)                        do_install ;;
 esac
