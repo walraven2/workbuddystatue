@@ -1,0 +1,8 @@
+# 构建产物
+build/
+
+# macOS
+.DS_Store
+
+# 日志与临时文件
+*.log
