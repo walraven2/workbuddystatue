@@ -1,14 +1,14 @@
 # WorkBuddy 积分小工具
 
-把 WorkBuddy 的积分余额直接显示在系统托盘 / 菜单栏里，鼠标一点即可看到明细、签到状态，并支持自动刷新与开机自启。
+把 WorkBuddy 的积分余额直接显示在系统托盘 / 菜单栏 / 桌面上，鼠标一点即可看到明细、一键签到，并支持自动刷新与开机自启。
 
-三个平台各有一份实现，共用同一套接口、配置格式与凭据来源：
+三个平台各有一份实现，共用同一套接口与配置格式：
 
 | 平台 | 显示载体 | 实现 | 说明 |
 | --- | --- | --- | --- |
 | **macOS** | 菜单栏 | Swift + AppKit | 本文档；产物约 300 KB |
 | **Windows** | 系统托盘 + 桌面悬浮窗 | Go（纯标准库） | [windows/README.md](windows/README.md)；单文件 exe |
-| **Linux** | XFCE 面板（genmon） | Python 3 | [linux/](linux/)；`linux/install.sh` |
+| **Linux** | 桌面小组件 + 托盘 | Python 3 + GTK3 | [linux/](linux/)；`linux/install-credits.sh` |
 
 ---
 
@@ -23,7 +23,7 @@
 - **菜单栏常驻**：以 `⚡ 1507` 形式显示剩余积分，支持「数值 / 百分比 / 仅图标」三种显示模式
 - **自动读取登录态**：直接复用 WorkBuddy 桌面端已登录的令牌，**无需手动填 token**，令牌刷新后自动跟随
 - **积分明细**：下拉菜单展示各套餐（成长计划、奖励积分等）的剩余 / 总量 / 已用
-- **签到状态**：显示今日是否签到、连续天数、本周签到天数
+- **每日签到**：一键签到并显示领取积分、连续天数、本周签到天数；重复点安全（幂等）
 - **自动刷新**：可选 1 / 5 / 15 / 30 分钟，或仅手动刷新（⌘R）
 - **登录时启动**：菜单内一键开关，写入用户级 LaunchAgent
 - **零依赖**：纯 Swift + AppKit，编译产物约 300 KB
@@ -39,7 +39,7 @@
 `WorkBuddyStatus-<版本>-macos-universal.zip`（同时支持 Intel 与 Apple 芯片），然后：
 
 ```bash
-unzip WorkBuddyStatus-1.2.0-macos-universal.zip
+unzip WorkBuddyStatus-1.3.0-macos-universal.zip
 ./WorkBuddyStatus.app/Contents/MacOS/WorkBuddyStatus --check   # 可选：先诊断
 xattr -dr com.apple.quarantine WorkBuddyStatus.app             # 去掉隔离属性
 cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.app
@@ -48,7 +48,7 @@ cp -R WorkBuddyStatus.app /Applications/ && open /Applications/WorkBuddyStatus.a
 或者解压后直接用仓库里的安装脚本：
 
 ```bash
-./install.sh WorkBuddyStatus-1.2.0-macos-universal.zip   # 安装并启动
+./install.sh WorkBuddyStatus-1.3.0-macos-universal.zip   # 安装并启动
 ./install.sh --uninstall                                 # 卸载（含登录自启）
 ```
 
@@ -124,6 +124,16 @@ Authorization: Bearer <accessToken>
 X-User-Id: <userId>
 ```
 
+签到相关：
+
+```
+POST /billing/meter/checkin-activity-status   # 查状态
+POST /billing/meter/daily-checkin             # 执行签到
+```
+
+> 「今日已签」时签到接口返回 **HTTP 400** + 响应体 `{"code":10001}`，
+> 需按业务码判定，不能把 4xx 当成失败。
+
 ## 卸载
 
 ```bash
@@ -146,18 +156,24 @@ rm -rf /Applications/WorkBuddyStatus.app ~/.workbuddy-status
 | `make-release.sh` | 创建 / 更新 GitHub Release 并上传发行包（需 token） |
 | `release-notes.md` | Release 说明正文，由 `make-release.sh` 读取 |
 | `windows/` | Windows 版（Go），详见 [windows/README.md](windows/README.md) |
-| `linux/` | Linux 版（Python + XFCE genmon），详见 [linux/](linux/) |
+| `linux/` | Linux 版（Python + GTK3 桌面小组件），详见 [linux/README.md](linux/README.md) |
 
 ## 共用约定
 
-三个平台读同一份配置文件 `~/.workbuddy-status/config.json`，凭据来源也一致：
+三个平台读同一份配置文件 `~/.workbuddy-status/config.json`，接口与缓存格式也一致。
+**但凭据位置各平台不同**——WorkBuddy 桌面端在各系统存放令牌的方式不一样：
 
-1. 配置里的 `accessToken`（或 `WORKBUDDY_ACCESS_TOKEN` 环境变量）
-2. WorkBuddy 桌面端登录信息
-   - macOS：`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/*.info`
-   - Windows：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info`
-   - Linux：`~/.local/share/CodeBuddyExtension/Data/Public/auth/*.info`
-3. 旧版布局 `~/.workbuddy/auth/`、`~/.codebuddy/auth/`
+| 平台 | 凭据位置 | 备注 |
+| --- | --- | --- |
+| macOS | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/*.info` | 明文 JSON |
+| Windows | `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info` | 明文 JSON |
+| Linux | `~/.config/CodeBuddy CN/automations/automations.db`（表 `automation_runs.runs_json`） | **没有 `auth/*.info`**；`state.vscdb` 里的令牌是加密 Buffer 取不出来，只能从 SQLite 抓明文 JWT |
+
+此外三个平台都会回退到旧布局 `~/.workbuddy/auth/`、`~/.codebuddy/auth/`。
+
+Linux 的 `automations.db` 里混着不少**被截断的 JWT 残片**，所以 Linux 版会把候选令牌
+按「优选指纹 → 签发时间 → 长度」排序后**逐个真去请求接口**，第一个成功的就是要用的那个，
+并把它的指纹存下来供下次优先使用。
 
 接口同为：
 
@@ -169,4 +185,3 @@ X-User-Id: <userId>
 
 Windows 版写 `config.json` 时采用「读-改-写」，只覆盖自己认识的键，
 因此 macOS 版写入的其它字段（包括 `"//"` 注释键）不会被抹掉。
-

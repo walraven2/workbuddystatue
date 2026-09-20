@@ -17,7 +17,7 @@ set -uo pipefail
 
 REPO="walraven2/workbuddystatue"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-TAG="V1.2"
+TAG="V1.3"
 NOTES="$ROOT/release-notes.md"
 
 # 参数解析：token 可来自 $GITHUB_TOKEN 或第一个位置参数；
@@ -55,11 +55,19 @@ if [[ ! -f "$NOTES" ]]; then
 fi
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Resources/Info.plist" 2>/dev/null || echo "0.0.0")"
-ASSET="$ROOT/dist/WorkBuddyStatus-$VERSION-macos-universal.zip"
-if [[ ! -f "$ASSET" ]]; then
-    echo "错误：找不到发行包 $ASSET，请先执行 ./build.sh dist" >&2
-    exit 1
-fi
+
+# 需要上传的发行包（macOS + Windows 两个平台）
+ASSETS=(
+    "$ROOT/dist/WorkBuddyStatus-$VERSION-macos-universal.zip"
+    "$ROOT/windows/dist/WorkBuddyStatus-$VERSION-windows-amd64.zip"
+)
+for _f in "${ASSETS[@]}"; do
+    if [[ ! -f "$_f" ]]; then
+        echo "错误：找不到发行包 $_f" >&2
+        echo "      请先执行 ./build.sh dist 与 (cd windows && ./build-windows.sh)" >&2
+        exit 1
+    fi
+done
 
 API="https://api.github.com/repos/$REPO"
 PYTHON="$(command -v python3 || echo /usr/bin/python3)"
@@ -156,13 +164,15 @@ if [[ -z "$RELEASE_ID" ]]; then
 fi
 echo "    $HTML_URL"
 
-# --- 上传附件（同名先删）---
-NAME="$(basename "$ASSET")"
-LOCAL_SIZE="$(stat -f%z "$ASSET")"
-echo "==> 处理附件 $NAME（$(( LOCAL_SIZE / 1024 / 1024 )) MB）"
+# --- 上传附件（同名先删；逐个上传，失败不中断其余）---
+FAILED=0
+for ASSET in "${ASSETS[@]}"; do
+    NAME="$(basename "$ASSET")"
+    LOCAL_SIZE="$(stat -f%z "$ASSET")"
+    echo "==> 处理附件 $NAME（$(( LOCAL_SIZE / 1024 / 1024 )) MB）"
 
-EXIST_ASSET_ID="$(api GET "$API/releases/$RELEASE_ID/assets?per_page=100" \
-    | "$PYTHON" -c '
+    EXIST_ASSET_ID="$(api GET "$API/releases/$RELEASE_ID/assets?per_page=100" \
+        | "$PYTHON" -c '
 import json, sys
 name = sys.argv[1]
 try:
@@ -174,34 +184,42 @@ for a in assets:
         print(a["id"]); break
 ' "$NAME")"
 
-if [[ -n "$EXIST_ASSET_ID" ]]; then
-    echo "    删除同名旧附件 ID=$EXIST_ASSET_ID"
-    api DELETE "$API/releases/assets/$EXIST_ASSET_ID" >/dev/null
-fi
+    if [[ -n "$EXIST_ASSET_ID" ]]; then
+        echo "    删除同名旧附件 ID=$EXIST_ASSET_ID"
+        api DELETE "$API/releases/assets/$EXIST_ASSET_ID" >/dev/null
+    fi
 
-echo "==> 上传中…"
-UP="$(curl -s -m 600 -w $'\n__HTTP__%{http_code}' -X POST \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    -H "Content-Type: application/zip" \
-    --data-binary "@$ASSET" \
-    "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME" 2>/dev/null)"
-STATUS="${UP##*__HTTP__}"
-UP="${UP%$'\n'__HTTP__*}"
+    echo "    上传中…"
+    UP="$(curl -s -m 600 -w $'\n__HTTP__%{http_code}' -X POST \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        -H "Content-Type: application/zip" \
+        --data-binary "@$ASSET" \
+        "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME" 2>/dev/null)"
+    STATUS="${UP##*__HTTP__}"
+    UP="${UP%$'\n'__HTTP__*}"
 
-DL="$(jget browser_download_url <<< "$UP")"
-REMOTE_SIZE="$(jget size <<< "$UP")"
-if [[ -z "$DL" ]]; then
-    echo "上传失败（HTTP $STATUS）：$UP" >&2
+    DL="$(jget browser_download_url <<< "$UP")"
+    REMOTE_SIZE="$(jget size <<< "$UP")"
+    if [[ -z "$DL" ]]; then
+        echo "    上传失败（HTTP $STATUS）：$UP" >&2
+        FAILED=1
+        continue
+    fi
+
+    echo "    $DL"
+    if [[ "$REMOTE_SIZE" == "$LOCAL_SIZE" ]]; then
+        echo "    大小校验通过：$LOCAL_SIZE 字节"
+    else
+        echo "    注意：远端 $REMOTE_SIZE 字节 vs 本地 $LOCAL_SIZE 字节" >&2
+    fi
+done
+
+echo
+if [[ "$FAILED" = "0" ]]; then
+    echo "完成：$HTML_URL"
+else
+    echo "部分附件上传失败，请重试（脚本幂等，可重复执行）：$HTML_URL" >&2
     exit 1
 fi
-
-echo "    $DL"
-if [[ "$REMOTE_SIZE" == "$LOCAL_SIZE" ]]; then
-    echo "    大小校验通过：$LOCAL_SIZE 字节"
-else
-    echo "    注意：远端 $REMOTE_SIZE 字节 vs 本地 $LOCAL_SIZE 字节" >&2
-fi
-echo
-echo "完成：$HTML_URL"

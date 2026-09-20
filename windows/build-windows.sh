@@ -16,7 +16,7 @@ cd "$(dirname "$0")" || exit 1
 
 VERSION="$(grep -m1 '"version"' ../Resources/Info.plist 2>/dev/null \
     | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')"
-VERSION="${VERSION:-1.2.0}"
+VERSION="${VERSION:-1.3.0}"
 
 ARCH="amd64"
 DO_ZIP=1

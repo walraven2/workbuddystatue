@@ -15,7 +15,7 @@
 // 用法：
 //
 //	go run ./tools/mkrsrc -ico Resources/AppIcon.ico \
-//	    -manifest Resources/app.manifest -version 1.2.0 \
+//	    -manifest Resources/app.manifest -version 1.3.0 \
 //	    -o rsrc_windows_amd64.syso
 package main
 
@@ -59,7 +59,7 @@ func main() {
 		icoPath      = flag.String("ico", "Resources/AppIcon.ico", "源 .ico 文件")
 		manifestPath = flag.String("manifest", "Resources/app.manifest", "清单 XML 文件")
 		outPath      = flag.String("o", "rsrc_windows_amd64.syso", "输出的目标文件")
-		version      = flag.String("version", "1.2.0", "版本号，如 1.2.0")
+		version      = flag.String("version", "1.3.0", "版本号，如 1.3.0")
 		productName  = flag.String("product", "WorkBuddy 积分托盘小工具", "产品名称")
 		companyName  = flag.String("company", "WorkBuddyStatus", "公司 / 作者名")
 	)

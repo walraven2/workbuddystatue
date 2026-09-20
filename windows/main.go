@@ -24,7 +24,7 @@ const (
 	appTitle = "WorkBuddy 积分"
 
 	// appVersion 与 macOS 版 release 保持一致
-	appVersion = "1.2.0"
+	appVersion = "1.3.0"
 
 	// 窗口消息（WM_APP 段，用于托盘回调与刷新完成通知）
 	msgTrayCallback = core.WMApp + 1
