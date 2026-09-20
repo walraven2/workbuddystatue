@@ -11,18 +11,34 @@
 #   - 幂等：Release 已存在则更新名称与说明，不会重复创建
 #   - 附件同名时先删除再上传，可反复执行
 #   - 版本号从 Resources/Info.plist 读取，避免多处不一致
+#   - 清理旧标签是「尽力而为」，失败不影响主流程
 #
-set -euo pipefail
+set -uo pipefail
 
 REPO="walraven2/workbuddystatue"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 TAG="V1.2"
 NOTES="$ROOT/release-notes.md"
 
-TOKEN="${1:-${GITHUB_TOKEN:-}}"
+# 参数解析：token 可来自 $GITHUB_TOKEN 或第一个位置参数；
+# --clean-tag <TAG> 可在任意位置出现
+TOKEN="${GITHUB_TOKEN:-}"
 CLEAN_TAG=""
-if [[ "${2:-}" == "--clean-tag" && -n "${3:-}" ]]; then
-    CLEAN_TAG="$3"
+POSITIONAL=()
+_i=1
+while [[ $_i -le $# ]]; do
+    _a="${!_i}"
+    if [[ "$_a" == "--clean-tag" ]]; then
+        _next=$((_i + 1))
+        CLEAN_TAG="${!_next:-}"
+        _i=$((_i + 2))
+    else
+        POSITIONAL+=("$_a")
+        _i=$((_i + 1))
+    fi
+done
+if [[ -z "$TOKEN" && ${#POSITIONAL[@]} -gt 0 ]]; then
+    TOKEN="${POSITIONAL[0]}"
 fi
 
 if [[ -z "$TOKEN" ]]; then
@@ -48,7 +64,24 @@ fi
 API="https://api.github.com/repos/$REPO"
 PYTHON="$(command -v python3 || echo /usr/bin/python3)"
 
-# 小工具：从 JSON 里取字段，避免正则被转义和嵌套 JSON 坑到
+STATUS=""
+# 调用 API：正文写 stdout，HTTP 状态码写入 $STATUS
+api() {
+    local method="$1" path="$2"
+    shift 2
+    local out
+    out="$(curl -s -m 600 -w $'\n__HTTP__%{http_code}' -X "$method" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "$@" "$path" 2>/dev/null)"
+    STATUS="${out##*__HTTP__}"
+    printf '%s' "${out%$'\n'__HTTP__*}"
+}
+
+ok() { [[ "$STATUS" =~ ^2 ]]; }
+
+# 从 JSON 取字段
 jget() {
     "$PYTHON" -c '
 import json, sys
@@ -66,40 +99,28 @@ print(d if d is not None else "")
 ' "$1"
 }
 
-api() {
-    local method="$1" path="$2"
-    shift 2
-    curl -s -m 120 -X "$method" \
-        -H "Authorization: Bearer $TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
-        "$@" "$path"
-}
-
 echo "==> 校验 token"
 ME="$(api GET https://api.github.com/user)"
 LOGIN="$(jget login <<< "$ME")"
 if [[ -z "$LOGIN" ]]; then
-    echo "token 校验失败：$ME" >&2
+    echo "token 校验失败（HTTP $STATUS）：$ME" >&2
     exit 1
 fi
 echo "    身份：$LOGIN"
 echo "    版本：$VERSION   标签：$TAG"
 
-# --- 可选：清理废弃标签对应的 Release ---
+# --- 可选：清理废弃标签对应的 Release（失败不阻断）---
 if [[ -n "$CLEAN_TAG" ]]; then
     echo "==> 清理旧 Release：$CLEAN_TAG"
     OLD_ID="$(api GET "$API/releases/tags/$CLEAN_TAG" | jget id)"
     if [[ -n "$OLD_ID" ]]; then
-        api DELETE "$API/releases/$OLD_ID" >/dev/null && echo "    已删除 Release $OLD_ID"
+        api DELETE "$API/releases/$OLD_ID" >/dev/null
+        if ok; then echo "    已删除 Release ID=$OLD_ID"; else echo "    删除 Release 失败（HTTP $STATUS），跳过"; fi
     else
         echo "    没有名为 $CLEAN_TAG 的 Release，跳过"
     fi
-    if api DELETE "$API/git/refs/tags/$CLEAN_TAG" >/dev/null 2>&1; then
-        echo "    已删除标签 $CLEAN_TAG"
-    else
-        echo "    标签 $CLEAN_TAG 不存在或删除失败，跳过"
-    fi
+    api DELETE "$API/git/refs/tags/$CLEAN_TAG" >/dev/null
+    if ok; then echo "    已删除标签 $CLEAN_TAG"; else echo "    标签 $CLEAN_TAG 不存在（HTTP $STATUS），跳过"; fi
 fi
 
 # --- 创建或更新 Release ---
@@ -130,14 +151,15 @@ fi
 RELEASE_ID="$(jget id <<< "$RESP")"
 HTML_URL="$(jget html_url <<< "$RESP")"
 if [[ -z "$RELEASE_ID" ]]; then
-    echo "Release 创建/更新失败：$RESP" >&2
+    echo "Release 创建/更新失败（HTTP $STATUS）：$RESP" >&2
     exit 1
 fi
 echo "    $HTML_URL"
 
 # --- 上传附件（同名先删）---
 NAME="$(basename "$ASSET")"
-echo "==> 处理附件 $NAME"
+LOCAL_SIZE="$(stat -f%z "$ASSET")"
+echo "==> 处理附件 $NAME（$(( LOCAL_SIZE / 1024 / 1024 )) MB）"
 
 EXIST_ASSET_ID="$(api GET "$API/releases/$RELEASE_ID/assets?per_page=100" \
     | "$PYTHON" -c '
@@ -153,24 +175,33 @@ for a in assets:
 ' "$NAME")"
 
 if [[ -n "$EXIST_ASSET_ID" ]]; then
-    echo "    删除旧附件 ID=$EXIST_ASSET_ID"
+    echo "    删除同名旧附件 ID=$EXIST_ASSET_ID"
     api DELETE "$API/releases/assets/$EXIST_ASSET_ID" >/dev/null
 fi
 
-echo "==> 上传（$(du -h "$ASSET" | awk '{print $1}')）"
-UP="$(curl -s -m 600 -X POST \
+echo "==> 上传中…"
+UP="$(curl -s -m 600 -w $'\n__HTTP__%{http_code}' -X POST \
     -H "Authorization: Bearer $TOKEN" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     -H "Content-Type: application/zip" \
     --data-binary "@$ASSET" \
-    "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME")"
+    "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME" 2>/dev/null)"
+STATUS="${UP##*__HTTP__}"
+UP="${UP%$'\n'__HTTP__*}"
 
 DL="$(jget browser_download_url <<< "$UP")"
+REMOTE_SIZE="$(jget size <<< "$UP")"
 if [[ -z "$DL" ]]; then
-    echo "上传失败：$UP" >&2
+    echo "上传失败（HTTP $STATUS）：$UP" >&2
     exit 1
 fi
+
 echo "    $DL"
+if [[ "$REMOTE_SIZE" == "$LOCAL_SIZE" ]]; then
+    echo "    大小校验通过：$LOCAL_SIZE 字节"
+else
+    echo "    注意：远端 $REMOTE_SIZE 字节 vs 本地 $LOCAL_SIZE 字节" >&2
+fi
 echo
 echo "完成：$HTML_URL"
